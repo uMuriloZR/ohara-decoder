@@ -181,15 +181,34 @@ function sampleCanvas(canvas,pos){if(!canvas||!stoneImg.complete||!stoneImg.natu
 function startCollect(i,editId=null){
  afterId=null;
  const group=editId?work.groups.find(g=>g.id===editId):null;
- collection={editId:group?editId:null,selected:new Set(group?group.positions:(i==null?[]:[i])),origin:i==null?(group?.positions[0]??null):i};collectHistory=[];
+ collection={editId:group?editId:null,selected:new Set(group?group.positions:(i==null?[]:[i])),origin:i==null?(group?.positions[0]??null):i,transferFrom:new Map()};collectHistory=[];
  renderAll();
   $('groups').scrollTop=0;
 }
 function clickPos(i){if(!work)return;
  if(collection){
   const existing=indexGroup(i);
-  if(existing && existing.id!==collection.editId){setStatus('This mark belongs to another discovery. Edit that group first.');return}
-  if(collection.selected.has(i)){collection.selected.delete(i);collectHistory.push({i,was:true})}
+  if(existing && existing.id!==collection.editId){
+   // Move one misclassified mark directly from its old discovery to the one being edited.
+   // Nothing changes in saved research until the player confirms the updated group.
+   if(!collection.editId){setStatus('This mark belongs to another discovery. Edit that group first.');return}
+   const destination=work.groups.find(g=>g.id===collection.editId);
+   if(!destination)return;
+   if(!confirm('Move this one mark from '+groupName(existing)+' ('+(existing.letter||'?')+') to '+groupName(destination)+' ('+(destination.letter||'?')+')?'))return;
+   collection.transferFrom.set(i,existing.id);
+   collection.selected.add(i);
+   collectHistory.push({i,was:false});
+   collection.origin=collection.origin??i;
+   renderAll();
+   setStatus('Mark selected for moving. Press Enter or Save to confirm the change.');
+   return;
+  }
+  if(collection.selected.has(i)){
+   const source=collection.transferFrom.get(i)||null;
+   collection.selected.delete(i);
+   collection.transferFrom.delete(i);
+   collectHistory.push({i,was:true,source});
+  }
   else{collection.selected.add(i);collectHistory.push({i,was:false})}
   if(collection.origin==null || !collection.selected.has(collection.origin)){collection.origin=[...collection.selected][0]??null}
   renderAll();return;
@@ -197,9 +216,22 @@ function clickPos(i){if(!work)return;
  const existing=indexGroup(i);
  if(existing){startCollect(i,existing.id)} else {startCollect(i)}
 }
-function undo(){if(!collection||!collectHistory.length)return;const last=collectHistory.pop();if(last.was)collection.selected.add(last.i);else collection.selected.delete(last.i);collection.origin=[...collection.selected][0]??null;renderAll()}
+function undo(){
+ if(!collection||!collectHistory.length)return;
+ const last=collectHistory.pop();
+ if(last.was){collection.selected.add(last.i);if(last.source)collection.transferFrom.set(last.i,last.source)}
+ else{collection.selected.delete(last.i);collection.transferFrom.delete(last.i)}
+ collection.origin=[...collection.selected][0]??null;renderAll();
+}
 function commit(confirmSaved=false){if(!collection||collection.selected.size===0)return false;
  let group=collection.editId?work.groups.find(g=>g.id===collection.editId):null;
+ // Apply confirmed transfers atomically with the destination update.
+ for(const [index,sourceId] of collection.transferFrom){
+  const source=work.groups.find(g=>g.id===sourceId);
+  if(source){source.positions=source.positions.filter(pos=>pos!==index);source.confirmed=true;source.recentAt=Date.now()-1}
+ }
+ // Do not leave empty discoveries behind when their last position is moved.
+ work.groups=work.groups.filter(g=>g===group || g.positions.length>0);
  if(group){group.positions=[...collection.selected].sort((a,b)=>a-b)}
  else{group={id:gid(),positions:[...collection.selected].sort((a,b)=>a-b),letter:''};work.groups.push(group)}
  group.recentAt=Date.now();group.confirmed=!!confirmSaved;
@@ -237,9 +269,17 @@ function renderOverlay(){const el=$('overlay');el.replaceChildren();if(!work)ret
  for(let i=0;i<91;i++){
   const spot=document.createElement('button');spot.type='button';const {x,y,row,col}=positions[i];
   const group=indexGroup(i),pend=collection?.selected.has(i);
-  spot.className='spot'+(pend?' pending':'')+(group?' assigned':'');
+  // Preview changes before saving: removed marks lose their old letter immediately,
+  // and marks being added/moved preview the new group's letter.
+  let displayedGroup=group;
+  if(collection?.editId){
+   if(group?.id===collection.editId&&!pend) displayedGroup=null;
+   if(pend&&(!group||group.id===collection.editId||collection.transferFrom.has(i)))
+    displayedGroup=work.groups.find(g=>g.id===collection.editId)||null;
+  }
+  spot.className='spot'+(pend?' pending':'')+(displayedGroup?' assigned':'');
   spot.style.left=(x/GRID.w*100)+'%';spot.style.top=(y/GRID.h*100)+'%';
-  const letter=showNotes&&group?.letter?group.letter:null;
+  const letter=showNotes&&displayedGroup?.letter?displayedGroup.letter:null;
   if(letter){const l=document.createElement('span');l.className='letter';l.textContent=letter;spot.appendChild(l)}
   if(pend){const n=document.createElement('span');n.className='index';n.textContent='✓';spot.appendChild(n)}
   spot.title='Row '+(row+1)+', position '+(col+1)+(group?', cataloged':'');
@@ -250,7 +290,10 @@ function renderFocus(){const empty=$('emptyFocus'),gather=$('gather'),after=$('a
  empty.classList.toggle('hidden',!!collection||!!afterId);
  gather.classList.toggle('hidden',!collection);
  after.classList.toggle('hidden',!afterId||!!collection);
- if(collection){$('gatherTitle').textContent=collection.editId?'Edit matches':'Collect matching marks';$('gatherCount').textContent='×'+collection.selected.size;const origin=collection.origin;$('sample').getContext('2d').clearRect(0,0,180,180);if(origin!=null)sampleCanvas($('sample'),origin);$('setBtn').disabled=!collection.selected.size;$('undoBtn').disabled=!collectHistory.length;$('setBtn').textContent=collection.editId?'Update group':'Set group'}
+ if(collection){$('gatherTitle').textContent=collection.editId?'Edit matches':'Collect matching marks';$('gatherCount').textContent='×'+collection.selected.size;const origin=collection.origin;$('sample').getContext('2d').clearRect(0,0,180,180);if(origin!=null)sampleCanvas($('sample'),origin);$('setBtn').disabled=!collection.selected.size;$('undoBtn').disabled=!collectHistory.length;$('setBtn').textContent=collection.editId?'Update group':'Set group';
+  const guidance=$('gather').querySelector('.workRow .muted');
+  guidance.textContent=collection.editId?'Click an existing match to remove it, or click a mark from another discovery to move it here. Press Enter to save.':'Find the same symbol on the stone and click each match. Click a selected mark again to remove it.';
+ }
 }
 function renderGroups(){const c=$('groups');c.replaceChildren();const groups=work?.groups||[];$('noGroups').classList.toggle('hidden',groups.length!==0);
  const ordered=[...groups].sort((a,b)=>Number(b.id===collection?.editId)-Number(a.id===collection?.editId) || (b.recentAt||0)-(a.recentAt||0) || groups.indexOf(b)-groups.indexOf(a));
@@ -351,6 +394,18 @@ function exportPNG(){if(!work||!stoneImg.naturalWidth)return;
 $('chooseBtn').addEventListener('click',e=>{e.stopPropagation();$('file').click()});$('changeBtn').addEventListener('click',()=>$('file').click());$('file').addEventListener('change',e=>{loadFile(e.target.files[0]);e.target.value='' });
 $('upload').addEventListener('click',e=>{if(e.target.id!=='chooseBtn')$('file').click()});$('upload').addEventListener('keydown',e=>{if(e.target===$('upload')&&(e.key==='Enter'||e.key===' ')){$('file').click();e.preventDefault()}});
 $('upload').addEventListener('dragover',e=>{e.preventDefault();$('upload').classList.add('drag')});$('upload').addEventListener('dragleave',()=>$('upload').classList.remove('drag'));$('upload').addEventListener('drop',e=>{e.preventDefault();$('upload').classList.remove('drag');loadFile(e.dataTransfer.files[0])});
+// Enter also finishes the current collection after clicking a mark on the stone.
+// Those mark buttons are recreated on each click, so keyboard focus is usually lost.
+document.addEventListener('keydown', e=>{
+ if(e.key!=='Enter'||e.repeat||e.isComposing||!collection)return;
+ const target=e.target instanceof Element?e.target:null;
+ if(target?.closest('input, textarea, select, [contenteditable="true"]'))return;
+ // Preserve normal keyboard activation of other controls (Undo, Cancel, etc.).
+ if(target?.closest('button')&&!target.closest('.spot'))return;
+ e.preventDefault();
+ if(collection.editId)saveDiscovery(collection.editId);
+ else commit(false);
+});
 $('setBtn').addEventListener('click',()=>commit(Boolean(collection?.editId)));$('cancelBtn').addEventListener('click',()=>{collection=null;collectHistory=[];renderAll()});$('undoBtn').addEventListener('click',undo);$('nextBtn').addEventListener('click',()=>{afterId=null;renderAll();setStatus('Click any unmarked symbol to begin another discovery.')});
 $('toggleBtn').addEventListener('click',()=>{showNotes=!showNotes;$('toggleBtn').textContent=showNotes?'Hide annotations':'Show annotations';renderOverlay()});$('exportBtn').addEventListener('click',exportPNG);
 $('resetStone').addEventListener('click',()=>{if(!work||!confirm('Erase your research for this stone only?'))return;work.groups=[];collection=null;afterId=null;persist();renderAll();setStatus('This stone’s research has been cleared.')});
