@@ -191,7 +191,25 @@ function clickPos(i){if(!work)return;
   if(existing && existing.id!==collection.editId){
    // Move one misclassified mark directly from its old discovery to the one being edited.
    // Nothing changes in saved research until the player confirms the updated group.
-   if(!collection.editId){setStatus('This mark belongs to another discovery. Edit that group first.');return}
+   if(!collection.editId){
+    // A player may start with a NEW mark and only then spot its matching,
+    // ALREADY-CATALOGED symbol. Join that existing discovery rather than forcing
+    // them to cancel and restart from the old mark. Confirm first so accidental
+    // clicks cannot change the target discovery or any saved research.
+    const pending=[...collection.selected].filter(pos=>!existing.positions.includes(pos));
+    const count=pending.length;
+    if(!confirm('Add '+count+' selected mark'+(count===1?'':'s')+' to '+groupName(existing)+' ('+(existing.letter||'?')+')?\n\nYou can review the matches before saving.'))return;
+    collection.editId=existing.id;
+    collection.selected=new Set([...existing.positions,...pending]);
+    collection.origin=pending[0]??existing.positions[0]??null;
+    collection.transferFrom.clear();
+    // Undo should only back out NEW additions, not the discovery's old matches.
+    collectHistory=pending.map(pos=>({i:pos,was:false}));
+    renderAll();
+    $('groups').scrollTop=0;
+    setStatus('Review the added marks in '+groupName(existing)+'. Press Enter or Save to update.');
+    return;
+   }
    const destination=work.groups.find(g=>g.id===collection.editId);
    if(!destination)return;
    if(!confirm('Move this one mark from '+groupName(existing)+' ('+(existing.letter||'?')+') to '+groupName(destination)+' ('+(destination.letter||'?')+')?'))return;
